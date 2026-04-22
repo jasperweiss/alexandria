@@ -64,7 +64,7 @@ Other useful flags:
 
 ## Searching
 
-Full-text search (FTS5) over **title** and **author** (and `search_text` when ingest stores it):
+Full-text search (FTS5) over **title** and **author**:
 
 ```bash
 alexandria search --db alexandria.db --query "your words" --limit 20
