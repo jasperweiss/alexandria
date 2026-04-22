@@ -2,6 +2,7 @@
 name = "alexandria"
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/jasperweiss/alexandria"
 
 [dependencies]
 anyhow = "1"
@@ -21,3 +22,8 @@ librqbit = { git = "https://github.com/exbit/rqbit", rev = "944c15c", default-fe
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 indicatif = "0.17"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
