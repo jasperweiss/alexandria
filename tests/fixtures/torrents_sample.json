@@ -1,0 +1,24 @@
+[
+  {
+    "url": "https://example.invalid/torrents/fixture-dataset-a.torrent",
+    "top_level_group_name": "fixture_top",
+    "group_name": "fixture_group",
+    "display_name": "fixture_org__fixture_dataset__20200101T000000Z--20200101T000001Z.torrent",
+    "added_to_torrents_list_at": "2020-01-01",
+    "is_metadata": false,
+    "btih": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "magnet_link": "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&dn=fixture_org__fixture_dataset__20200101T000000Z--20200101T000001Z.torrent&tr=udp://127.0.0.1:1/announce",
+    "torrent_size": 1000,
+    "num_files": 10,
+    "data_size": 1000000,
+    "aa_currently_seeding": false,
+    "obsolete": false,
+    "embargo": false,
+    "seeders": 0,
+    "leechers": 0,
+    "completed": 0,
+    "stats_scraped_at": "2020-01-01T00:00:00",
+    "partially_broken": false,
+    "random": "fixture_random_token_01"
+  }
+]

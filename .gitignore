@@ -1,0 +1,7 @@
+/target
+*.json
+!tests/fixtures/*.json
+*.json.gz
+*.db
+*.db-shm
+*.db-wal

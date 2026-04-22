@@ -1,0 +1,128 @@
+{
+  "_index": "aarecords__0",
+  "_id": "md5:a1b2c3d4e5f6789012345678abcdef01",
+  "_score": 1,
+  "_source": {
+    "id": "md5:a1b2c3d4e5f6789012345678abcdef01",
+    "file_unified_data": {
+      "cover_url_best": "https://example.invalid/cover/placeholder",
+      "cover_url_additional": [],
+      "extension_best": "zip",
+      "extension_additional": [],
+      "filesize_best": 703120,
+      "filesize_additional": [],
+      "title_best": "QuokkaFixture Anthology (test data)",
+      "title_additional": [],
+      "author_best": "Placeholder Author Collective",
+      "author_additional": [],
+      "publisher_best": "Placeholder Press",
+      "publisher_additional": [],
+      "edition_varia_best": "Fixture Region, 1927",
+      "edition_varia_additional": ["1902-60"],
+      "year_best": "1927",
+      "year_additional": ["1902"],
+      "comments_multiple": ["v.11-12 fixture note"],
+      "stripped_description_best": "",
+      "stripped_description_additional": [],
+      "language_codes": ["en"],
+      "added_date_unified": {
+        "date_oclc_scrape": "2025-01-01",
+        "date_hathi_source": "2023-01-01"
+      },
+      "problems": [],
+      "content_type_best": "book_unknown",
+      "ipfs_infos": [],
+      "identifiers_unified": {
+        "aarecord_id": ["md5:a1b2c3d4e5f6789012345678abcdef01"],
+        "aacid": [
+          "aacid__fixture_catalog__20200101T000000Z__aaaaaaaaaaaaaaaa",
+          "aacid__fixture_records__20200101T000000Z__bbbbbbbbbbbbbbbb"
+        ],
+        "hathi": ["fixture.hathi.id.0000001"],
+        "filepath": [
+          "fixture/deep/tree/00deadbeef00/example.zip"
+        ],
+        "oclc": ["999888777"],
+        "isbn10": ["123456789X"],
+        "server_path": [
+          "g1/fixture_tree/fixture_tree_20200101/fixture_org__fixture_dataset__20200101T000000Z--20200101T000001Z/aacid__fixture_inner__20200101T000000Z__00deadbeef00"
+        ]
+      },
+      "classifications_unified": {
+        "filesize_bytes": ["703120"],
+        "year": ["1902", "1927"],
+        "lang": ["en"],
+        "date_oclc_scrape": ["2025-01-01"],
+        "date_hathi_source": ["2023-01-01"],
+        "content_type": ["book_unknown"],
+        "torrent": [
+          "managed_by_aa/fixture_group/fixture_org__fixture_dataset__20200101T000000Z--20200101T000001Z.torrent"
+        ],
+        "collection": ["fixture_collection"]
+      },
+      "most_likely_language_codes": ["en"],
+      "language_codes_detected": [],
+      "added_date_best": "",
+      "original_filename_best": "fixture/deep/tree/00deadbeef00/example.zip",
+      "has_aa_downloads": 1,
+      "has_aa_exclusive_downloads": 0,
+      "has_torrent_paths": 1,
+      "has_scidb": 0,
+      "has_meaningful_problems": 0,
+      "ol_is_primary_linked": false
+    },
+    "source_records": [
+      {
+        "source_type": "fixture_source_a",
+        "source_record": {
+          "requested_func": "fixture_lookup",
+          "requested_key": "md5",
+          "requested_value": "a1b2c3d4e5f6789012345678abcdef01",
+          "fixture_id": "fixture-record-001",
+          "aac_file": {
+            "aacid": "aacid__fixture_inner__20200101T000000Z__00deadbeef00",
+            "data_folder": "fixture_org__fixture_dataset__20200101T000000Z--20200101T000001Z"
+          }
+        },
+        "source_why": "fixture_provenance_note"
+      },
+      {
+        "source_type": "oclc",
+        "source_record": {
+          "requested_func": "fixture_oclc_stub",
+          "requested_key": "oclc",
+          "requested_value": "999888777",
+          "oclc_id": "999888777"
+        },
+        "source_why": "fixture_oclc_chain_stub"
+      }
+    ],
+    "indexes": ["aarecords"],
+    "search_only_fields": {
+      "search_filesize": 703120,
+      "search_year": "1927",
+      "search_extension": "zip",
+      "search_content_type": "book_unknown",
+      "search_most_likely_language_code": ["en"],
+      "search_isbn13": [],
+      "search_doi": [],
+      "search_title": "QuokkaFixture Anthology (test data)",
+      "search_author": "Placeholder Author Collective",
+      "search_publisher": "Placeholder Press",
+      "search_edition_varia": "Fixture Region, 1927",
+      "search_original_filename": "fixture/deep/tree/00deadbeef00/example.zip",
+      "search_added_date": "",
+      "search_description_comments": "\nv.11-12 fixture note",
+      "search_text": "QuokkaFixture Anthology unique search blob.\nPlaceholder Author Collective.\nmd5:a1b2c3d4e5f6789012345678abcdef01\nzip\nfixture tokens only",
+      "search_access_types": [
+        "external_download",
+        "aa_download",
+        "torrents_available"
+      ],
+      "search_record_sources": ["fixture_collection"],
+      "search_record_primary_source": "fixture_collection",
+      "search_bulk_torrents": "has_bulk_torrents",
+      "search_score_base_rank": 10937
+    }
+  }
+}
