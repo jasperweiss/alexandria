@@ -24,7 +24,7 @@ The binary is `target/release/alexandria`.
 Pick a path for the database (default `alexandria.db`):
 
 ```bash
-./target/release/alexandria db-init --path alexandria.db
+alexandria db-init --path alexandria.db
 ```
 
 `ingest-torrents` and `ingest-elastic` also ensure the schema exists, so this step is optional if you go straight to ingest.
@@ -34,7 +34,7 @@ Pick a path for the database (default `alexandria.db`):
 Point at the torrents JSON you obtained from Anna's Archive:
 
 ```bash
-./target/release/alexandria ingest-torrents --db alexandria.db --from /path/to/torrents_full.json
+alexandria ingest-torrents --db alexandria.db --from /path/to/torrents_full.json
 ```
 
 This fills the `torrents` table (magnets, BTIH, etc.) used when resolving downloads.
@@ -44,13 +44,13 @@ This fills the `torrents` table (magnets, BTIH, etc.) used when resolving downlo
 Pass the **directory** that contains only the shard files (`aarecords__0.json.gz`, `aarecords__1.json.gz`, …). The ingestor walks that directory in order:
 
 ```bash
-./target/release/alexandria ingest-elastic --db alexandria.db --from /path/to/elasticsearch
+alexandria ingest-elastic --db alexandria.db --from /path/to/elasticsearch
 ```
 
 Format is auto-detected per file. For a full mirror, **filtering is strongly recommended** so the database stays smaller and ingest finishes sooner:
 
 ```bash
-./target/release/alexandria ingest-elastic --db alexandria.db --from /path/to/elasticsearch \
+alexandria ingest-elastic --db alexandria.db --from /path/to/elasticsearch \
   -x pdf -x epub -l en
 ```
 
@@ -67,7 +67,7 @@ Other useful flags:
 Full-text search (FTS5) over **title** and **author** (and `search_text` when ingest stores it):
 
 ```bash
-./target/release/alexandria search --db alexandria.db --query "your words" --limit 20
+alexandria search --db alexandria.db --query "your words" --limit 20
 ```
 
 Plain output is TSV-like lines: `id`, size, extension, author, title. **`--json`** prints structured hits.
@@ -77,7 +77,7 @@ If the query is a **single ISBN-10 or ISBN-13** (hyphens optional), search resol
 ## Inspecting a record
 
 ```bash
-./target/release/alexandria show --db alexandria.db <id>
+alexandria show --db alexandria.db <id>
 ```
 
 Use the record id from search (with or without an `md5:` prefix). JSON includes metadata, ISBN-13s, OCLC numbers, and `record_files` rows (torrent display name, path inside the torrent, magnet when joined).
@@ -87,7 +87,7 @@ Use the record id from search (with or without an `md5:` prefix). JSON includes 
 Downloads use **BitTorrent** (via librqbit). You need a `record_files` row with a non-empty `path_in_torrent` and a magnet linked from the torrents ingest.
 
 ```bash
-./target/release/alexandria download --db alexandria.db <id> --output-dir /path/to/out
+alexandria download --db alexandria.db <id> --output-dir /path/to/out
 ```
 
 - **`--timeout-secs`** — cap wait time for the transfer (default 300).
