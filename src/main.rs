@@ -90,8 +90,8 @@ enum Command {
     Search {
         #[arg(short, long, default_value = "alexandria.db")]
         db: PathBuf,
-        #[arg(short, long)]
-        query: String,
+        #[arg(short, long, num_args = 1..)]
+        query: Vec<String>,
         #[arg(short, long, default_value_t = 20)]
         limit: usize,
         #[arg(long, default_value_t = false)]
@@ -221,6 +221,7 @@ fn main() -> anyhow::Result<()> {
             json,
         } => {
             let conn = open_db(&db)?;
+            let query = query.join(" ");
             let hits = search_records(&conn, &query, limit)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&hits)?);
@@ -363,4 +364,36 @@ fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::{Cli, Command};
+    use clap::Parser;
+
+    #[test]
+    fn search_query_accepts_multiple_words_after_flag() {
+        let cli = Cli::try_parse_from([
+            "alexandria",
+            "search",
+            "--query",
+            "nineteen",
+            "eighty-four",
+        ])
+        .expect("parse");
+        match cli.command {
+            Command::Search { query, .. } => assert_eq!(query.join(" "), "nineteen eighty-four"),
+            _ => panic!("expected Search"),
+        }
+    }
+
+    #[test]
+    fn search_query_still_accepts_single_quoted_argv() {
+        let cli = Cli::try_parse_from(["alexandria", "search", "--query", "nineteen eighty-four"])
+            .expect("parse");
+        match cli.command {
+            Command::Search { query, .. } => assert_eq!(query.join(" "), "nineteen eighty-four"),
+            _ => panic!("expected Search"),
+        }
+    }
 }
