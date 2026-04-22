@@ -15,8 +15,9 @@ serde_json = "1"
 md5 = "0.7"
 tempfile = "3"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
 # Pinned to exbit/rqbit (PR #580: avoid placeholder files for unselected torrent files → fewer open FDs).
 librqbit = { git = "https://github.com/exbit/rqbit", rev = "944c15c", default-features = false, features = ["rust-tls", "http-api-client"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+indicatif = "0.17"

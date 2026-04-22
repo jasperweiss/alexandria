@@ -12,9 +12,9 @@ pub use db::{
 };
 pub use download::{
     download_to_dir, execute_download_plan, extract_matching_tar_member,
-    fetch_torrent_download_meta, format_byte_size_iec, file_md5_hex, plan_file_selection,
-    resolve_download, verify_download_against_record_md5, DownloadPlan, ResolvedDownload,
-    TorrentDownloadMeta,
+    fetch_torrent_download_meta, fetch_torrent_download_meta_with_progress, format_byte_size_iec,
+    file_md5_hex, plan_file_selection, resolve_download, verify_download_against_record_md5,
+    CTRL_C_INTERRUPT_MESSAGE, DownloadPlan, ResolvedDownload, TorrentDownloadMeta,
 };
 pub use elastic::{
     extension_filter_from_args, ingest_elastic_path, language_filter_from_args,

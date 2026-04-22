@@ -46,11 +46,11 @@ fn main() -> anyhow::Result<()> {
     }
     let read_parse = t1.elapsed();
 
-    println!("file: {}", path.display());
-    println!("lines read (no JSON):     {lines} in {:.3}s", read_only.as_secs_f64());
-    println!("lines parsed (serde_json): {parsed} in {:.3}s", read_parse.as_secs_f64());
+    println!("File: {}", path.display());
+    println!("Lines read (no JSON):     {lines} in {:.3}s", read_only.as_secs_f64());
+    println!("Lines parsed (serde_json): {parsed} in {:.3}s", read_parse.as_secs_f64());
     println!(
-        "parse overhead vs read-only: {:.1}%",
+        "Parse overhead vs read-only: {:.1}%",
         (read_parse.as_secs_f64() / read_only.as_secs_f64() - 1.0) * 100.0
     );
     Ok(())

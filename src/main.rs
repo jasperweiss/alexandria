@@ -1,7 +1,8 @@
 use alexandria::{
     download::{
-        execute_download_plan, fetch_torrent_download_meta, format_byte_size_iec,
-        plan_file_selection, resolve_download, verify_download_against_record_md5, DownloadPlan,
+        execute_download_plan, fetch_torrent_download_meta_with_progress, format_byte_size_iec,
+        plan_file_selection, resolve_download, verify_download_against_record_md5,
+        CTRL_C_INTERRUPT_MESSAGE, DownloadPlan,
     },
     elastic::{
         extension_filter_from_args, ingest_elastic_path, language_filter_from_args,
@@ -12,7 +13,7 @@ use alexandria::{
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use std::io::{self, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[derive(Parser)]
@@ -139,11 +140,17 @@ impl From<ElasticInputFormatCli> for ElasticInputFormat {
     }
 }
 
+fn user_hit_ctrl_c(e: &anyhow::Error) -> bool {
+    e.chain()
+        .any(|c| c.to_string().as_str() == CTRL_C_INTERRUPT_MESSAGE)
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new("info,librqbit=warn,librqbit_dht=warn")
+            }),
         )
         .init();
 
@@ -152,13 +159,13 @@ fn main() -> anyhow::Result<()> {
         Command::DbInit { path } => {
             let conn = open_db(&path)?;
             init_schema(&conn)?;
-            println!("initialized {}", path.display());
+            println!("Initialized {}", path.display());
         }
         Command::IngestTorrents { db, from } => {
             let conn = open_db(&db)?;
             init_schema(&conn)?;
             let n = ingest_torrents_path(&conn, &from)?;
-            println!("ingested {n} torrents from {}", from.display());
+            println!("Ingested {n} torrents from {}", from.display());
         }
         Command::IngestElastic {
             db,
@@ -178,13 +185,13 @@ fn main() -> anyhow::Result<()> {
             if let Some(ref set) = ext_filter {
                 let mut v: Vec<_> = set.iter().cloned().collect();
                 v.sort();
-                println!("elastic ingest: extension filter: {}", v.join(", "));
+                println!("Elastic ingest: extension filter: {}", v.join(", "));
             }
             let lang_filter = language_filter_from_args(&language);
             if let Some(ref set) = lang_filter {
                 let mut v: Vec<_> = set.iter().cloned().collect();
                 v.sort();
-                println!("elastic ingest: language filter: {}", v.join(", "));
+                println!("Elastic ingest: language filter: {}", v.join(", "));
             }
             let ingest_opts = ElasticIngestOptions {
                 batch_size: ingest_batch_size,
@@ -202,7 +209,7 @@ fn main() -> anyhow::Result<()> {
                 ingest_opts,
             )?;
             println!(
-                "elastic ingest: lines={} docs={} inserted={} skipped_existing={} skipped_extension={} skipped_language={} parse_errors={} join_hits={} join_misses={}",
+                "Elastic ingest: lines={} docs={} inserted={} skipped_existing={} skipped_extension={} skipped_language={} parse_errors={} join_hits={} join_misses={}",
                 stats.lines_seen,
                 stats.documents,
                 stats.inserted,
@@ -237,7 +244,7 @@ fn main() -> anyhow::Result<()> {
                         h.id, size, h.extension, h.author, h.title
                     );
                 }
-                println!("{} hits", hits.len());
+                println!("Found {} hits", hits.len());
             }
         }
         Command::Show { db, id } => {
@@ -245,7 +252,7 @@ fn main() -> anyhow::Result<()> {
             let rec = show_record(&conn, &id)?;
             match rec {
                 Some(r) => println!("{}", serde_json::to_string_pretty(&r)?),
-                None => eprintln!("record not found"),
+                None => eprintln!("Record not found"),
             }
         }
         Command::Download {
@@ -263,18 +270,27 @@ fn main() -> anyhow::Result<()> {
                     id
                 );
             };
-            println!(
-                "downloading {} via magnet (torrent {}, file {:?}, index ext {:?}) -> {}",
-                res.record_id,
-                res.torrent_display_name,
-                res.path_in_torrent,
-                res.extension.as_deref(),
-                output_dir.display()
-            );
+            let out = output_dir.as_path();
+            if out == Path::new(".") || out == Path::new("./") {
+                eprintln!("Downloading {} using torrent", res.record_id);
+            } else {
+                eprintln!(
+                    "Downloading {} using torrent\n  into {}",
+                    res.record_id,
+                    output_dir.display()
+                );
+            }
             std::fs::create_dir_all(&output_dir)?;
 
             let rt = tokio::runtime::Runtime::new()?;
-            let meta = rt.block_on(fetch_torrent_download_meta(&res.magnet))?;
+            let meta = match rt.block_on(fetch_torrent_download_meta_with_progress(&res.magnet)) {
+                Ok(m) => m,
+                Err(e) if user_hit_ctrl_c(&e) => {
+                    eprintln!("Cancelled");
+                    std::process::exit(130);
+                }
+                Err(e) => return Err(e),
+            };
             let plan = plan_file_selection(
                 &meta.info,
                 res.path_in_torrent.as_str(),
@@ -288,7 +304,7 @@ fn main() -> anyhow::Result<()> {
                     inner_path,
                     ..
                 } => {
-                    println!(
+                    eprintln!(
                         "Path {:?} is not a top-level file in the torrent; treating as a member inside archive:\n  {} ({} · {} bytes)",
                         inner_path,
                         container_torrent_path,
@@ -320,7 +336,7 @@ fn main() -> anyhow::Result<()> {
                         let mut line = String::new();
                         io::stdin().read_line(&mut line)?;
                         if !matches!(line.trim().to_lowercase().as_str(), "y" | "yes") {
-                            println!("cancelled");
+                            println!("Cancelled");
                             return Ok(());
                         }
                         let p = if let Some(ref p) = archive_dir {
@@ -344,13 +360,13 @@ fn main() -> anyhow::Result<()> {
                 }
                 DownloadPlan::Direct { .. } => {
                     if archive_dir.is_some() {
-                        eprintln!("note: --archive-dir is only used for nested .tar downloads; ignoring");
+                        eprintln!("Note: --archive-dir is only used for nested .tar downloads; ignoring");
                     }
                     None
                 }
             };
 
-            let paths = rt.block_on(execute_download_plan(
+            let paths = match rt.block_on(execute_download_plan(
                 meta,
                 &output_dir,
                 plan,
@@ -358,9 +374,16 @@ fn main() -> anyhow::Result<()> {
                 Duration::from_secs(timeout_secs),
                 archive_download_dir.as_deref(),
                 Some(res.record_id.as_str()),
-            ))?;
+            )) {
+                Ok(p) => p,
+                Err(e) if user_hit_ctrl_c(&e) => {
+                    eprintln!("Cancelled");
+                    std::process::exit(130);
+                }
+                Err(e) => return Err(e),
+            };
             verify_download_against_record_md5(&paths, Some(res.record_id.as_str()))?;
-            println!("download step completed");
+            println!("Download complete");
         }
     }
     Ok(())

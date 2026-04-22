@@ -2,15 +2,16 @@ use crate::db::{any_records_exist, normalize_record_id, FastIngestPragmas};
 use crate::isbn::record_isbn13_set_from_file_unified;
 use crate::oclc::record_oclc_set_from_identifiers_unified;
 use anyhow::Context;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rusqlite::Connection;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub enum ElasticInputFormat {
@@ -210,9 +211,19 @@ pub fn ingest_elastic_path(
             options,
         );
     }
-    println!("elastic ingest: {}", path.display());
+    let use_indicatif = std::io::stderr().is_terminal();
+    let pb_opt = if use_indicatif {
+        let multi = MultiProgress::new();
+        let total = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let pb = create_shard_read_progress_bar(&multi, total);
+        pb.set_prefix(format!("{} · ", path.display()));
+        Some(pb)
+    } else {
+        println!("Elastic ingest: {}", path.display());
+        None
+    };
     let mut torrent_cache = HashMap::new();
-    ingest_elastic_one_file(
+    let stats = ingest_elastic_one_file(
         conn,
         path,
         format,
@@ -223,7 +234,12 @@ pub fn ingest_elastic_path(
         language_filter,
         &options,
         &mut torrent_cache,
-    )
+        pb_opt.clone(),
+    )?;
+    if let Some(pb) = pb_opt {
+        pb.finish_with_message(format!("✓ {}", path.display()));
+    }
+    Ok(stats)
 }
 
 fn ingest_elastic_directory(
@@ -260,10 +276,13 @@ fn ingest_elastic_directory(
 
     let n = shards.len();
     println!(
-        "elastic ingest: {} shard file(s) under {}",
+        "Elastic ingest: {} shard file(s) under {}",
         n,
         dir.display()
     );
+
+    let use_indicatif = std::io::stderr().is_terminal();
+    let multi = use_indicatif.then(|| MultiProgress::new());
 
     let mut total = ElasticIngestStats::default();
     let mut torrent_cache = HashMap::new();
@@ -272,14 +291,19 @@ fn ingest_elastic_directory(
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string());
-        println!(
-            "elastic ingest [{}/{}] shard {} — {}",
-            i + 1,
-            n,
-            shard_id,
-            fname
-        );
-        let file_stats = ingest_elastic_one_file(
+        let label = format!("[{}/{}] shard {} — {}", i + 1, n, shard_id, fname);
+        let file_total = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+
+        let pb_opt = if let Some(ref m) = multi {
+            let pb = create_shard_read_progress_bar(m, file_total);
+            pb.set_prefix(format!("{label} · "));
+            Some(pb)
+        } else {
+            println!("Elastic ingest {}", label);
+            None
+        };
+
+        let file_stats = match ingest_elastic_one_file(
             conn,
             &path,
             format,
@@ -290,8 +314,20 @@ fn ingest_elastic_directory(
             language_filter,
             &options,
             &mut torrent_cache,
-        )
-        .with_context(|| format!("ingest {} (shard {})", path.display(), shard_id))?;
+            pb_opt.clone(),
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                if let Some(pb) = pb_opt {
+                    pb.abandon();
+                }
+                return Err(e).with_context(|| format!("ingest {} (shard {})", path.display(), shard_id));
+            }
+        };
+
+        if let Some(pb) = pb_opt {
+            pb.finish_with_message(format!("✓ {label}"));
+        }
         total.lines_seen += file_stats.lines_seen;
         total.documents += file_stats.documents;
         total.inserted += file_stats.inserted;
@@ -316,6 +352,7 @@ fn ingest_elastic_one_file(
     language_filter: Option<&HashSet<String>>,
     options: &ElasticIngestOptions,
     torrent_cache: &mut HashMap<String, (Option<String>, Option<String>)>,
+    read_progress: Option<ProgressBar>,
 ) -> anyhow::Result<ElasticIngestStats> {
     let _pragma_guard = if options.fast_pragmas {
         Some(FastIngestPragmas::apply(conn).map_err(|e| anyhow::anyhow!("{e}"))?)
@@ -359,6 +396,7 @@ fn ingest_elastic_one_file(
                 options,
                 torrent_cache,
                 &mut stats,
+                read_progress.clone(),
             )?;
         }
         ElasticInputFormat::Auto => {
@@ -403,6 +441,7 @@ fn ingest_elastic_one_file(
                     options,
                     torrent_cache,
                     &mut stats,
+                    read_progress.clone(),
                 )?;
             }
         }
@@ -447,11 +486,17 @@ fn ingest_lines_stream(
     options: &ElasticIngestOptions,
     torrent_cache: &mut HashMap<String, (Option<String>, Option<String>)>,
     stats: &mut ElasticIngestStats,
+    indicatif_pb: Option<ProgressBar>,
 ) -> anyhow::Result<()> {
     let total = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let bytes_read = Arc::new(AtomicU64::new(0));
     let done = Arc::new(AtomicBool::new(false));
-    let progress = spawn_shard_progress_thread(bytes_read.clone(), total, done.clone());
+    let progress = spawn_shard_progress_thread(
+        bytes_read.clone(),
+        total,
+        done.clone(),
+        indicatif_pb.clone(),
+    );
 
     let r = crate::io_util::open_decompressed_reader_with_byte_counter(path, bytes_read)
         .with_context(|| format!("open {}", path.display()))?;
@@ -477,33 +522,46 @@ fn spawn_shard_progress_thread(
     bytes_read: Arc<AtomicU64>,
     total: u64,
     done: Arc<AtomicBool>,
+    indicatif_pb: Option<ProgressBar>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let start = Instant::now();
-        while !done.load(Ordering::Relaxed) {
-            std::thread::sleep(std::time::Duration::from_millis(250));
+        if let Some(pb) = indicatif_pb {
+            while !done.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(250));
+                let br = bytes_read.load(Ordering::Relaxed);
+                let elapsed = start.elapsed().as_secs_f64();
+                update_shard_progress_bar(&pb, br, total, elapsed);
+            }
             let br = bytes_read.load(Ordering::Relaxed);
             let elapsed = start.elapsed().as_secs_f64();
-            print_shard_progress_line(br, total, elapsed);
-        }
-        let br = bytes_read.load(Ordering::Relaxed);
-        let elapsed = start.elapsed().as_secs_f64();
-        let br_show = br.min(total);
-        let pct = if total > 0 {
-            (br_show as f64 / total as f64 * 100.0).min(100.0)
+            update_shard_progress_bar(&pb, br, total, elapsed);
         } else {
-            100.0
-        };
-        eprint!(
-            "\r  shard I/O: {} / {} ({:.1}%) — {:.1}s{}",
-            format_bytes_iec(br_show),
-            format_bytes_iec(total),
-            pct,
-            elapsed,
-            " ".repeat(12)
-        );
-        let _ = std::io::stderr().flush();
-        eprintln!();
+            while !done.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(250));
+                let br = bytes_read.load(Ordering::Relaxed);
+                let elapsed = start.elapsed().as_secs_f64();
+                print_shard_progress_line(br, total, elapsed);
+            }
+            let br = bytes_read.load(Ordering::Relaxed);
+            let elapsed = start.elapsed().as_secs_f64();
+            let br_show = br.min(total);
+            let pct = if total > 0 {
+                (br_show as f64 / total as f64 * 100.0).min(100.0)
+            } else {
+                100.0
+            };
+            eprint!(
+                "\r  Shard I/O: {} / {} ({:.1}%) — {:.1}s{}",
+                format_bytes_iec(br_show),
+                format_bytes_iec(total),
+                pct,
+                elapsed,
+                " ".repeat(12)
+            );
+            let _ = std::io::stderr().flush();
+            eprintln!();
+        }
     })
 }
 
@@ -523,7 +581,7 @@ fn print_shard_progress_line(br: u64, total: u64, elapsed_secs: f64) {
         (0.0, "—".to_string())
     };
     eprint!(
-        "\r  shard I/O: {} / {} ({:.1}%) — ETA {}",
+        "\r  Shard I/O: {} / {} ({:.1}%) — ETA {}",
         format_bytes_iec(br_show),
         format_bytes_iec(total),
         pct,
@@ -565,6 +623,55 @@ fn format_eta_seconds(seconds: f64) -> String {
         return format!("{}m {:02}s", s / 60, s % 60);
     }
     format!("{}h {:02}m", s / 3600, (s % 3600) / 60)
+}
+
+fn create_shard_read_progress_bar(multi: &MultiProgress, file_size: u64) -> ProgressBar {
+    let pb = if file_size > 0 {
+        multi.add(ProgressBar::new(file_size))
+    } else {
+        let p = multi.add(ProgressBar::new_spinner());
+        p.enable_steady_tick(Duration::from_millis(120));
+        p
+    };
+    if file_size > 0 {
+        pb.set_style(
+            ProgressStyle::with_template(
+                "{prefix}{spinner:.green} [{wide_bar:.cyan/blue}] {bytes:>9}/{total_bytes:9} {msg}",
+            )
+            .unwrap()
+            .progress_chars("=>-"),
+        );
+    } else {
+        pb.set_style(
+            ProgressStyle::with_template("{prefix}{spinner:.green} {wide_msg}").unwrap(),
+        );
+    }
+    pb
+}
+
+fn update_shard_progress_bar(pb: &ProgressBar, br: u64, total: u64, elapsed_secs: f64) {
+    let br_show = if total > 0 { br.min(total) } else { br };
+    if total > 0 {
+        pb.set_position(br_show);
+        let pct = (br_show as f64 / total as f64 * 100.0).min(100.0);
+        let eta = if br_show > 4096 && elapsed_secs > 0.05 && br_show < total {
+            let rate = br_show as f64 / elapsed_secs;
+            let rem_s = (total - br_show) as f64 / rate;
+            format_eta_seconds(rem_s)
+        } else {
+            "…".to_string()
+        };
+        pb.set_message(format!(
+            "{pct:.1}% · ETA {eta} · {:.0}s",
+            elapsed_secs
+        ));
+    } else {
+        pb.set_message(format!(
+            "{} read · {:.0}s",
+            format_bytes_iec(br_show),
+            elapsed_secs
+        ));
+    }
 }
 
 fn ingest_lines_from_str<'a>(

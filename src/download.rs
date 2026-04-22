@@ -2,19 +2,24 @@ use crate::db::normalize_record_id;
 use anyhow::Context;
 use bytes::Bytes;
 use flate2::read::GzDecoder;
+use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
 use librqbit::{
-    AddTorrent, AddTorrentOptions, AddTorrentResponse, ByteBufOwned, ListOnlyResponse, Session,
-    ValidatedTorrentMetaV1Info,
+    AddTorrent, AddTorrentOptions, AddTorrentResponse, ByteBufOwned, ListOnlyResponse,
+    ManagedTorrent, Session, TorrentStats, TorrentStatsState, ValidatedTorrentMetaV1Info,
 };
 use md5::Context as Md5Context;
 use rusqlite::Connection;
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, IsTerminal, Read};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use tar::Archive;
+
+/// Returned from download helpers when the user presses Ctrl+C so callers can recognize cancellation.
+pub const CTRL_C_INTERRUPT_MESSAGE: &str = "Interrupted (Ctrl+C)";
 
 #[derive(Debug, Clone)]
 pub struct ResolvedDownload {
@@ -143,7 +148,7 @@ pub fn verify_download_against_record_md5(
     }
     if paths.len() > 1 {
         eprintln!(
-            "warning: skipping MD5 check ({} files); record id {}",
+            "Warning: skipping MD5 check ({} files); record id {}",
             paths.len(),
             expected
         );
@@ -333,22 +338,53 @@ pub fn plan_file_selection(
 
 /// Fetch torrent metadata (`list_only`) from a magnet URI.
 pub async fn fetch_torrent_download_meta(magnet: &str) -> anyhow::Result<TorrentDownloadMeta> {
+    fetch_torrent_download_meta_inner(magnet, None).await
+}
+
+/// Like [`fetch_torrent_download_meta`], but shows a short-lived stderr spinner on a TTY
+/// while the magnet is resolved.
+pub async fn fetch_torrent_download_meta_with_progress(magnet: &str) -> anyhow::Result<TorrentDownloadMeta> {
+    let pb = if io::stderr().is_terminal() {
+        Some(torrent_download_progress_bar())
+    } else {
+        None
+    };
+    let r = fetch_torrent_download_meta_inner(magnet, pb.as_ref()).await;
+    if let Some(p) = pb {
+        p.finish_and_clear();
+    }
+    r
+}
+
+async fn fetch_torrent_download_meta_inner(
+    magnet: &str,
+    pb: Option<&ProgressBar>,
+) -> anyhow::Result<TorrentDownloadMeta> {
+    if let Some(pb) = pb {
+        pb.set_message("Fetching torrent metadata from magnet…");
+    }
     let tmp = tempfile::tempdir_in(std::env::temp_dir()).context("tempdir for torrent list_only")?;
     let scratch = tmp.path().canonicalize().context("canonicalize list_only scratch")?;
     let session = Session::new(scratch.clone())
         .await
         .context("create librqbit session for list_only")?;
 
-    let list_resp = session
-        .add_torrent(
+    if let Some(pb) = pb {
+        pb.set_message("Talking to trackers & DHT…");
+    }
+    let list_resp = tokio::select! {
+        r = session.add_torrent(
             AddTorrent::from_url(magnet),
             Some(AddTorrentOptions {
                 list_only: true,
                 ..Default::default()
             }),
-        )
-        .await
-        .context("fetch torrent metadata (list_only)")?;
+        ) => r.context("fetch torrent metadata (list_only)")?,
+        _ = tokio::signal::ctrl_c() => {
+            session.stop().await;
+            return Err(anyhow::anyhow!(CTRL_C_INTERRUPT_MESSAGE));
+        }
+    };
 
     session.stop().await;
 
@@ -681,6 +717,150 @@ pub fn extract_matching_tar_member(
     })
 }
 
+fn torrent_download_progress_bar() -> ProgressBar {
+    let pb = if io::stderr().is_terminal() {
+        ProgressBar::new_spinner()
+    } else {
+        ProgressBar::hidden()
+    };
+    pb.enable_steady_tick(Duration::from_millis(100));
+    pb.set_style(
+        ProgressStyle::with_template("{spinner:.green} {msg}")
+            .unwrap()
+            .tick_strings(&[
+                "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+            ]),
+    );
+    pb
+}
+
+fn apply_torrent_bytes_progress_style(pb: &ProgressBar, total_bytes: u64) {
+    if total_bytes == 0 {
+        return;
+    }
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{wide_bar:.cyan/blue}] {bytes:>9}/{total_bytes:9} {bytes_per_sec:>11} {eta:5}  {msg}",
+        )
+        .unwrap()
+        .progress_chars("=>-"),
+    );
+    pb.set_length(total_bytes.max(1));
+}
+
+/// `live + connecting` peer count for the progress line.
+fn format_peer_count(st: &TorrentStats) -> String {
+    let n = if let Some(ref live) = st.live {
+        live.snapshot
+            .peer_stats
+            .live
+            .saturating_add(live.snapshot.peer_stats.connecting)
+    } else {
+        0
+    };
+    format!("({n} peer{})", if n == 1 { "" } else { "s" })
+}
+
+/// Bytes to drive the progress bar. `TorrentStats::progress_bytes` is verified-on-disk only
+/// (`HaveNeededSelected::progress`), so it stays flat until whole pieces pass the hash check.
+/// `LiveStats.snapshot.fetched_bytes` includes in-flight payload and matches transfer activity.
+fn progress_bytes_for_ui(st: &TorrentStats) -> u64 {
+    if st.total_bytes == 0 {
+        return st.progress_bytes;
+    }
+    if let Some(ref live) = st.live {
+        let snap = &live.snapshot;
+        snap.fetched_bytes
+            .max(snap.downloaded_and_checked_bytes)
+            .min(st.total_bytes)
+    } else {
+        st.progress_bytes.min(st.total_bytes)
+    }
+}
+
+async fn wait_until_initialized_with_progress(
+    handle: &Arc<ManagedTorrent>,
+    pb: &ProgressBar,
+) -> anyhow::Result<()> {
+    let h = Arc::clone(handle);
+    let fut = h.wait_until_initialized();
+    tokio::pin!(fut);
+    loop {
+        tokio::select! {
+            res = &mut fut => {
+                return res.context("wait for torrent metadata");
+            }
+            _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                let st = handle.stats();
+                let line = match st.state {
+                    TorrentStatsState::Initializing => {
+                        let peers = format_peer_count(&st);
+                        let checked = HumanBytes(st.progress_bytes);
+                        format!("Awaiting peers… {peers} · verified {checked}")
+                    }
+                    TorrentStatsState::Error => st
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "error".to_string()),
+                    _ => format!(
+                        "{} — {} {}",
+                        st.state,
+                        st.progress_percent_human_readable(),
+                        format_peer_count(&st)
+                    ),
+                };
+                pb.set_message(line);
+            }
+        }
+    }
+}
+
+async fn wait_until_completed_with_progress(
+    handle: &Arc<ManagedTorrent>,
+    pb: &ProgressBar,
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    let run = async {
+        let h = Arc::clone(handle);
+        let fut = h.wait_until_completed();
+        tokio::pin!(fut);
+        let mut bar_configured = false;
+        loop {
+            tokio::select! {
+                res = &mut fut => {
+                    return res.context("torrent finished with error");
+                }
+                _ = tokio::time::sleep(Duration::from_millis(250)) => {
+                    let st = handle.stats();
+                    if st.total_bytes > 0 && !bar_configured {
+                        apply_torrent_bytes_progress_style(pb, st.total_bytes);
+                        bar_configured = true;
+                    }
+                    if bar_configured {
+                        pb.set_position(progress_bytes_for_ui(&st));
+                    } else {
+                        pb.set_message(format!(
+                            "Warming up… {} · {}",
+                            format_peer_count(&st),
+                            HumanBytes(progress_bytes_for_ui(&st))
+                        ));
+                    }
+                    if bar_configured {
+                        let mut msg = format_peer_count(&st);
+                        if let Some(ref live) = st.live {
+                            msg.push_str(&format!(" · {live}"));
+                        }
+                        pb.set_message(msg);
+                    }
+                }
+            }
+        }
+    };
+    tokio::time::timeout(timeout, run)
+        .await
+        .map_err(|_| anyhow::anyhow!("download timed out after {:?}", timeout))?
+}
+
 /// `preferred_name_record_id`: when set, the downloaded file is renamed to
 /// `{normalize_record_id}[.ext]` (preferred extension if set, otherwise the on-disk extension).
 pub async fn execute_download_plan(
@@ -731,15 +911,14 @@ pub async fn execute_download_plan(
                     }
                 };
 
-                handle
-                    .wait_until_initialized()
+                let pb = torrent_download_progress_bar();
+                wait_until_initialized_with_progress(&handle, &pb)
                     .await
                     .context("wait for torrent metadata")?;
-
-                tokio::time::timeout(complete_timeout, handle.wait_until_completed())
+                wait_until_completed_with_progress(&handle, &pb, complete_timeout)
                     .await
-                    .map_err(|_| anyhow::anyhow!("download timed out after {:?}", complete_timeout))?
                     .context("torrent finished with error")?;
+                pb.finish_and_clear();
 
                 move_selected_to_final(&scratch, &output_dir, &meta.info, &indices)?;
                 let paths = apply_preferred_extensions(
@@ -750,11 +929,15 @@ pub async fn execute_download_plan(
                     preferred_name_record_id,
                 )?;
                 Ok(paths)
-            }
-            .await;
+            };
+            tokio::pin!(work);
+            let work_out = tokio::select! {
+                r = &mut work => r,
+                _ = tokio::signal::ctrl_c() => Err(anyhow::anyhow!(CTRL_C_INTERRUPT_MESSAGE)),
+            };
 
             session.stop().await;
-            work
+            work_out
         }
         DownloadPlan::NestedArchive {
             container_index,
@@ -800,15 +983,14 @@ pub async fn execute_download_plan(
                     }
                 };
 
-                handle
-                    .wait_until_initialized()
+                let pb = torrent_download_progress_bar();
+                wait_until_initialized_with_progress(&handle, &pb)
                     .await
                     .context("wait for torrent (nested)")?;
-
-                tokio::time::timeout(complete_timeout, handle.wait_until_completed())
+                wait_until_completed_with_progress(&handle, &pb, complete_timeout)
                     .await
-                    .map_err(|_| anyhow::anyhow!("download timed out after {:?}", complete_timeout))?
                     .context("torrent finished with error (nested)")?;
+                pb.finish_and_clear();
 
                 let rel = meta
                     .info
@@ -843,11 +1025,15 @@ pub async fn execute_download_plan(
                     .with_context(|| format!("remove archive {}", tar_path.display()))?;
 
                 Ok(vec![final_path])
-            }
-            .await;
+            };
+            tokio::pin!(work);
+            let work_out = tokio::select! {
+                r = &mut work => r,
+                _ = tokio::signal::ctrl_c() => Err(anyhow::anyhow!(CTRL_C_INTERRUPT_MESSAGE)),
+            };
 
             session.stop().await;
-            work
+            work_out
         }
     }
 }
@@ -869,7 +1055,7 @@ pub async fn download_to_dir(
         anyhow::bail!("refusing full-torrent download: path_in_torrent is missing or empty");
     };
 
-    let meta = fetch_torrent_download_meta(magnet).await?;
+    let meta = fetch_torrent_download_meta_with_progress(magnet).await?;
     let plan = plan_file_selection(&meta.info, p, record_id)?;
 
     if matches!(plan, DownloadPlan::NestedArchive { .. }) && archive_download_dir.is_none() {
