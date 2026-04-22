@@ -67,7 +67,7 @@ Other useful flags:
 Full-text search (FTS5) over **title** and **author**:
 
 ```bash
-alexandria search --db alexandria.db --query "your words" --limit 20
+alexandria search --db alexandria.db --limit 20 your words
 ```
 
 Plain output is TSV-like lines: `id`, size, extension, author, title. **`--json`** prints structured hits.

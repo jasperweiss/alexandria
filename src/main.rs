@@ -90,12 +90,12 @@ enum Command {
     Search {
         #[arg(short, long, default_value = "alexandria.db")]
         db: PathBuf,
-        #[arg(short, long, num_args = 1..)]
-        query: Vec<String>,
         #[arg(short, long, default_value_t = 20)]
         limit: usize,
         #[arg(long, default_value_t = false)]
         json: bool,
+        #[arg(value_name = "QUERY", num_args = 1..)]
+        query: Vec<String>,
     },
     /// Show one record and file rows
     Show {
@@ -372,15 +372,9 @@ mod cli_tests {
     use clap::Parser;
 
     #[test]
-    fn search_query_accepts_multiple_words_after_flag() {
-        let cli = Cli::try_parse_from([
-            "alexandria",
-            "search",
-            "--query",
-            "nineteen",
-            "eighty-four",
-        ])
-        .expect("parse");
+    fn search_query_accepts_multiple_positional_words() {
+        let cli = Cli::try_parse_from(["alexandria", "search", "nineteen", "eighty-four"])
+            .expect("parse");
         match cli.command {
             Command::Search { query, .. } => assert_eq!(query.join(" "), "nineteen eighty-four"),
             _ => panic!("expected Search"),
@@ -388,8 +382,28 @@ mod cli_tests {
     }
 
     #[test]
-    fn search_query_still_accepts_single_quoted_argv() {
-        let cli = Cli::try_parse_from(["alexandria", "search", "--query", "nineteen eighty-four"])
+    fn search_query_positional_after_options() {
+        let cli = Cli::try_parse_from([
+            "alexandria",
+            "search",
+            "--limit",
+            "5",
+            "nineteen",
+            "eighty-four",
+        ])
+        .expect("parse");
+        match cli.command {
+            Command::Search { query, limit, .. } => {
+                assert_eq!(limit, 5);
+                assert_eq!(query.join(" "), "nineteen eighty-four");
+            }
+            _ => panic!("expected Search"),
+        }
+    }
+
+    #[test]
+    fn search_query_single_quoted_argv() {
+        let cli = Cli::try_parse_from(["alexandria", "search", "nineteen eighty-four"])
             .expect("parse");
         match cli.command {
             Command::Search { query, .. } => assert_eq!(query.join(" "), "nineteen eighty-four"),
